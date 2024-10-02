@@ -1,11 +1,15 @@
+import os
 import gradio as gr
 from gradio_imageslider import ImageSlider
 from loadimg import load_img
-import spaces
 from transformers import AutoModelForImageSegmentation
 import torch
 from torchvision import transforms
-
+from tqdm import tqdm
+import time  # Если понадобится для демонстрации
+from pathlib import Path
+from datetime import datetime
+OUTPUT = "outputs/"
 torch.set_float32_matmul_precision(["high", "highest"][0])
 
 birefnet = AutoModelForImageSegmentation.from_pretrained(
@@ -20,6 +24,7 @@ transform_image = transforms.Compose(
     ]
 )
 
+
 def fn(image):
     im = load_img(image, output_type="pil")
     im = im.convert("RGB")
@@ -27,7 +32,7 @@ def fn(image):
     image = process(im)
     return (image, origin)
 
-@spaces.GPU
+
 def process(image):
     image_size = image.size
     input_images = transform_image(image).unsqueeze(0).to("cuda")
@@ -39,37 +44,53 @@ def process(image):
     mask = pred_pil.resize(image_size)
     image.putalpha(mask)
     return image
-  
-def process_file(f):
-    name_path = f.rsplit(".",1)[0]+".png"
-    im = load_img(f, output_type="pil")
-    im = im.convert("RGB")
-    transparent = process(im)
-    transparent.save(name_path)
-    return name_path
+
+
+
+def process_files(files: list[str]):
+    pathes = []
+    current_time = datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+    new_path = f"{OUTPUT}{current_time}"
+    Path(new_path).mkdir(parents=True, exist_ok=True)
+
+    # Обернём список файлов в tqdm для отображения прогресса
+    for f in tqdm(files, desc="Обработка файлов", ncols=80):
+        name_path = f.rsplit(".", 1)[0] + ".png"
+        im = load_img(f, output_type="pil")
+        im = im.convert("RGB")
+        transparent = process(im)
+        s = name_path.split("\\")[-1]
+        name_path = f"{new_path}/{s}"
+        transparent.save(name_path)
+        pathes.append(name_path)
+        # Если хотите отображать итерации в секунду, tqdm делает это автоматически
+        # через параметр `rate` (скорость обработки)
+        # Можно настроить отображение через параметр `bar_format`
+    return pathes
+
 
 slider1 = ImageSlider(label="birefnet", type="pil")
 slider2 = ImageSlider(label="birefnet", type="pil")
 image = gr.Image(label="Upload an image")
-image2 = gr.Image(label="Upload an image",type="filepath")
-text = gr.Textbox(label="Paste an image URL")
-png_file = gr.File(label="output png file")
+batch_input = gr.File(label="Upload an images", file_count="multiple", file_types=["image"])
+png_files = gr.File(label="output png file", file_count="multiple")
 
 
 chameleon = load_img("butterfly.jpg", output_type="pil")
 
-url = "https://hips.hearstapps.com/hmg-prod/images/gettyimages-1229892983-square.jpg"
-tab1 = gr.Interface(
+slider = gr.Interface(
     fn, inputs=image, outputs=slider1, examples=[chameleon], api_name="image"
 )
 
-tab2 = gr.Interface(fn, inputs=text, outputs=slider2, examples=[url], api_name="text")
-tab3 = gr.Interface(process_file, inputs=image2, outputs=png_file, examples=["butterfly.jpg"], api_name="png")
-
-
-demo = gr.TabbedInterface(
-    [tab1, tab2,tab3], ["image", "text","png"], title="birefnet for background removal"
+batch = gr.Interface(
+    process_files,
+    inputs=batch_input,
+    outputs=png_files,
+    examples=["butterfly.jpg"],
+    api_name="batch",
 )
 
+app = gr.TabbedInterface([slider, batch], ["image", "batch"], title="background removal")
+
 if __name__ == "__main__":
-    demo.launch(show_error=True)
+    app.launch(show_error=True, inbrowser=True)
